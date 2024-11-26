@@ -29,6 +29,8 @@ func init() {
 			"Options:",
 			"  -b, --body <data>         Request body",
 			"  -d, --delay <delay>       Delay between issuing requests (ms)",
+			"  -g, --goroutines <maxGoroutines>       Maximum number of concurrent connections",
+
 			"  -H, --header <header>     Add a header to the request (can be specified multiple times)",
 			"      --ignore-html         Don't save HTML files; useful when looking non-HTML files only",
 			"      --ignore-empty        Don't save empty files",
@@ -65,6 +67,10 @@ func main() {
 	flag.IntVar(&delayMs, "delay", 100, "")
 	flag.IntVar(&delayMs, "d", 100, "")
 
+	var maxGoroutines int
+	flag.IntVar(&maxGoroutines, "goroutines", 10, "")
+	flag.IntVar(&maxGoroutines, "g", 10, "")
+
 	var method string
 	flag.StringVar(&method, "method", "GET", "")
 	flag.StringVar(&method, "m", "GET", "")
@@ -98,6 +104,12 @@ func main() {
 	flag.Parse()
 
 	delay := time.Duration(delayMs * 1000000)
+
+	maxNbConcurrentGoroutines := flag.Int("MaxGoroutines", maxGoroutines, "The number of goroutines that are allowed to run concurrently")
+	concurrentGoroutines := make(chan struct{}, *maxNbConcurrentGoroutines)
+
+	var rate_limits_reached int
+
 	client := newClient(keepAlives, proxy)
 	prefix := outputDir
 
@@ -119,6 +131,8 @@ func main() {
 
 		go func() {
 			defer wg.Done()
+			concurrentGoroutines <- struct{}{}
+			defer func() { <-concurrentGoroutines }()
 
 			// create the request
 			var b io.Reader
@@ -166,6 +180,13 @@ func main() {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to read body: %s\n", err)
 				return
+			}
+
+			if resp.StatusCode == 429 {
+				// You are being rate limited.
+				// If you see this message you should look into using proxies.
+				rate_limits_reached++
+				fmt.Printf("%d. Rate limits reached.\n", rate_limits_reached)
 			}
 
 			shouldSave := saveResponses || len(saveStatus) > 0 && saveStatus.Includes(resp.StatusCode)
